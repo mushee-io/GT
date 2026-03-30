@@ -21,17 +21,53 @@ export async function runPaidSummarize({ serverUrl, walletAddress, text, rpcUrl 
     body,
   });
 
+  const rawPaymentRequired =
+    firstTry.headers.get("PAYMENT-REQUIRED") ??
+    firstTry.headers.get("payment-required");
+
+  const rawPaymentResponse =
+    firstTry.headers.get("PAYMENT-RESPONSE") ??
+    firstTry.headers.get("payment-response");
+
+  const firstBodyText = await firstTry.text();
+
   if (firstTry.status !== 402) {
+    let parsed;
+    try {
+      parsed = firstBodyText ? JSON.parse(firstBodyText) : null;
+    } catch {
+      parsed = firstBodyText;
+    }
+
     return {
       initialStatus: firstTry.status,
       paidStatus: firstTry.status,
       settlement: null,
-      data: await firstTry.json(),
+      data: parsed,
       paymentRequired: null,
+      debug: {
+        rawPaymentRequired,
+        rawPaymentResponse,
+        firstBodyText,
+      },
     };
   }
 
-  const paymentRequired = httpClient.getPaymentRequiredResponse((name) => firstTry.headers.get(name));
+  let paymentRequired;
+  try {
+    paymentRequired = httpClient.getPaymentRequiredResponse((name) => firstTry.headers.get(name));
+  } catch (err) {
+    throw new Error(
+      [
+        err?.message || "Invalid payment required response",
+        `status=${firstTry.status}`,
+        `PAYMENT-REQUIRED=${rawPaymentRequired ? rawPaymentRequired.slice(0, 160) : "<missing>"}`,
+        `PAYMENT-RESPONSE=${rawPaymentResponse ? rawPaymentResponse.slice(0, 160) : "<missing>"}`,
+        `body=${firstBodyText ? firstBodyText.slice(0, 300) : "<empty>"}`,
+      ].join("\n")
+    );
+  }
+
   let paymentPayload = await client.createPaymentPayload(paymentRequired);
   paymentPayload = tightenSorobanFee(paymentPayload, paymentRequired.network);
   const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
@@ -45,7 +81,14 @@ export async function runPaidSummarize({ serverUrl, walletAddress, text, rpcUrl 
     body,
   });
 
-  const data = await paidResponse.json();
+  const paidBodyText = await paidResponse.text();
+  let data;
+  try {
+    data = paidBodyText ? JSON.parse(paidBodyText) : null;
+  } catch {
+    data = paidBodyText;
+  }
+
   const settlement = httpClient.getPaymentSettleResponse((name) => paidResponse.headers.get(name));
 
   return {
@@ -54,6 +97,12 @@ export async function runPaidSummarize({ serverUrl, walletAddress, text, rpcUrl 
     settlement,
     paymentRequired,
     data,
+    debug: {
+      rawPaymentRequired,
+      rawPaymentResponse,
+      firstBodyText,
+      paidBodyText,
+    },
   };
 }
 
